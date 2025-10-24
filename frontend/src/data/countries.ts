@@ -36,10 +36,24 @@ type CountriesObject = {
   geometries: GeometryObject[];
 };
 
-type World110m = Topology<{ countries: CountriesObject }> & {
+type World110m = Topology<{ countries: CountriesObject; ne_110m_admin_0_countries: CountriesObject }> & {
   objects: {
     countries: CountriesObject;
+    ne_110m_admin_0_countries: CountriesObject;
   };
+};
+
+const normaliseProperties = (properties: RawCountryProperties): RawCountryProperties => {
+  const result: RawCountryProperties = { ...properties };
+
+  for (const [key, value] of Object.entries(properties)) {
+    const lowerKey = key.toLowerCase();
+    if (!(lowerKey in result)) {
+      (result as Record<string, unknown>)[lowerKey] = value;
+    }
+  }
+
+  return result;
 };
 
 const CONTINENT_NORMALISATION: Record<string, Continent> = {
@@ -85,6 +99,44 @@ const rawCountries = feature(world110m, world110m.objects.countries) as FeatureC
   Geometry,
   RawCountryProperties
 >;
+const rawCountryMetadata = feature(
+  world110m,
+  world110m.objects.ne_110m_admin_0_countries,
+) as FeatureCollection<Geometry, RawCountryProperties>;
+
+const metadataLookup = rawCountryMetadata.features.reduce<Map<string, RawCountryProperties>>(
+  (accumulator, metadataFeature) => {
+    const properties = normaliseProperties(metadataFeature.properties ?? ({} as RawCountryProperties));
+    const keys = new Set<string>();
+
+    if (metadataFeature.id !== null && metadataFeature.id !== undefined) {
+      keys.add(String(metadataFeature.id).toLowerCase());
+    }
+    const candidateKeys = [
+      properties.iso_a3,
+      (properties as Record<string, unknown>).adm0_a3,
+      (properties as Record<string, unknown>).adm0_a3_us,
+      properties.name,
+      properties.name_long,
+      (properties as Record<string, unknown>).formal_en,
+      (properties as Record<string, unknown>).geounit,
+    ];
+
+    for (const candidate of candidateKeys) {
+      if (!candidate || typeof candidate !== 'string') continue;
+      keys.add(candidate.toLowerCase());
+    }
+
+    for (const key of keys) {
+      if (!accumulator.has(key)) {
+        accumulator.set(key, properties);
+      }
+    }
+
+    return accumulator;
+  },
+  new Map<string, RawCountryProperties>(),
+);
 
 const normaliseContinent = (properties: RawCountryProperties): Continent => {
   const candidates = [properties.continent, properties.region_un, properties.subregion, properties.name];
@@ -125,10 +177,32 @@ const normaliseContinent = (properties: RawCountryProperties): Continent => {
 export const countries: CountryFeature[] = rawCountries.features
   .filter((featureItem): featureItem is CountryFeature => featureItem.geometry !== null)
   .map((featureItem) => {
-    const properties = featureItem.properties ?? ({} as RawCountryProperties);
+    const initialProperties = normaliseProperties(
+      featureItem.properties ?? ({} as RawCountryProperties),
+    );
+    const metadataMatch =
+      metadataLookup.get(String(featureItem.id ?? '').toLowerCase()) ??
+      (initialProperties.iso_a3
+        ? metadataLookup.get(initialProperties.iso_a3.toLowerCase())
+        : undefined) ??
+      (initialProperties.name
+        ? metadataLookup.get(initialProperties.name.toLowerCase())
+        : undefined) ??
+      (initialProperties.name_long
+        ? metadataLookup.get(initialProperties.name_long.toLowerCase())
+        : undefined);
+
+    const properties = normaliseProperties(
+      metadataMatch ? { ...metadataMatch, ...initialProperties } : initialProperties,
+    );
+
     const continent = normaliseContinent(properties);
+    const isoA3 =
+      properties.iso_a3 ??
+      (properties as Record<string, unknown>).adm0_a3 ??
+      (properties as Record<string, unknown>).adm0_a3_us;
     const fallbackName = properties.name_long ?? properties.name ?? 'Unknown';
-    const id = featureItem.id ?? properties.iso_a3 ?? fallbackName;
+    const id = featureItem.id ?? (typeof isoA3 === 'string' ? isoA3 : undefined) ?? properties.name ?? fallbackName;
 
     return {
       ...featureItem,
@@ -137,7 +211,7 @@ export const countries: CountryFeature[] = rawCountries.features
         id,
         name: fallbackName,
         continent,
-        isoA3: properties.iso_a3,
+        isoA3: typeof isoA3 === 'string' ? isoA3 : undefined,
       },
     };
   });
