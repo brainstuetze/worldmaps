@@ -1,7 +1,7 @@
 import { feature } from 'topojson-client';
 import type { Feature, FeatureCollection, Geometry } from 'geojson';
 import type { GeometryObject, Topology } from 'topojson-specification';
-import worldData from 'world-atlas/world/110m.json';
+import worldData from 'world-atlas/countries-110m.json';
 
 export type Continent =
   | 'Africa'
